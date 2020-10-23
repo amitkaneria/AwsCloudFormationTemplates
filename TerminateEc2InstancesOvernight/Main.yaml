@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  FindAndShutdownEc2InstancesWithoutTagsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: FindAndShutdownEc2InstancesWithoutTagsLambdaPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - ec2:Get*
+                  - ec2:List*
+                  - ec2:Describe*
+                  - ec2:Start*
+                  - ec2:Stop*
+                Resource: "*"
+  FindAndShutdownEc2InstancesWithoutTagsLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import boto3
+          import logging
+
+          #setup simple logging for INFO
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          #define the connection
+          ec2 = boto3.resource('ec2')
+
+          def lambda_handler(event, context):
+            # Use the filter() method of the instances collection to retrieve
+            # all running EC2 instances.
+            filters = [{
+              'Name': 'instance-state-name', 
+              'Values': ['running']
+            }]
+
+            #filter the instances
+            instances = ec2.instances.filter(Filters=filters)
+
+            #locate all running instances
+            RunningInstances = [instance.id for instance in instances]
+
+            #print the instances for logging purposes
+            #print RunningInstances 
+
+            #make sure there are actually instances to shut down. 
+            if len(RunningInstances) > 0:
+              #perform the shutdown
+              shuttingDownResponse = ec2.instances.filter(InstanceIds=RunningInstances).stop()
+              print (f"Shutting down: {RunningInstances}")
+              print (f"Shutdown Response: {shuttingDownResponse}")
+            else:
+              print ("No instances found to stop!")                    
+      Handler: index.lambda_handler
+      Role:
+        Fn::GetAtt: [ FindAndShutdownEc2InstancesWithoutTagsLambdaRole , "Arn" ]
+      Runtime: python3.7
+      Timeout: 60
+  FindAndShutdownEc2InstancesWithoutTagsLambdaScheduler:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: cron(0 19 * * ? *)
+      Targets:
+        - Arn:
+            Fn::GetAtt: [ FindAndShutdownEc2InstancesWithoutTagsLambda , "Arn" ]
+          Id:
+            Ref: FindAndShutdownEc2InstancesWithoutTagsLambda
+  FindAndShutdownEc2InstancesWithoutTagsLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::GetAtt: [ FindAndShutdownEc2InstancesWithoutTagsLambda ,"Arn" ]
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt: [ FindAndShutdownEc2InstancesWithoutTagsLambdaScheduler , "Arn" ]
